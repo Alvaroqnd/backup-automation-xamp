@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Enterprise Backup Pro | CORE_SYNC</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.5.1/axios.min.js"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+<style>
+    .sidebar-item:hover { background: #1e293b; border-left: 4px solid #3b82f6; }
+    .gradient-bg { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
+    #historial { max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.9rem; }
+</style>
+</head>
+<body class="bg-gray-100 flex h-screen overflow-hidden">
+
+<!-- Sidebar -->
+<aside class="w-64 gradient-bg text-white hidden md:flex flex-col">
+    <div class="p-6">
+        <h2 class="text-2xl font-bold tracking-tighter text-blue-400">CORE_SYNC</h2>
+        <p class="text-xs text-slate-400">Enterprise Edition</p>
+    </div>
+    <nav class="flex-1 mt-4">
+        <a href="#" class="sidebar-item flex items-center py-3 px-6 text-white bg-slate-800 border-l-4 border-blue-500">
+            <i class="fas fa-hdd mr-3"></i> Unidades & Nube
+        </a>
+        <a href="#" class="sidebar-item flex items-center py-3 px-6 text-slate-300">
+            <i class="fas fa-history mr-3"></i> Historial de Versiones
+        </a>
+        <a href="#" class="sidebar-item flex items-center py-3 px-6 text-slate-300">
+            <i class="fas fa-user-shield mr-3"></i> Seguridad
+        </a>
+    </nav>
+    <div class="p-4 border-t border-slate-700 text-xs text-slate-500">
+        Estado: Servidor Sincronizado
+    </div>
+</aside>
+
+<!-- Main -->
+<main class="flex-1 overflow-y-auto">
+<header class="bg-white shadow-sm p-4 flex justify-between items-center px-8">
+    <div class="relative w-96">
+        <input type="text" placeholder="Buscar backups o archivos..." class="w-full bg-gray-100 border-none rounded-lg px-4 py-2 text-sm focus:ring-2 focus:ring-blue-400">
+    </div>
+    <div class="flex items-center gap-6">
+        <button class="relative text-gray-500 hover:text-blue-600">
+            <i class="fas fa-bell"></i>
+            <span class="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] rounded-full h-4 w-4 flex items-center justify-center">3</span>
+        </button>
+        <div class="flex items-center gap-3 border-l pl-6">
+            <span class="text-sm font-medium">{{ username|upper }}</span>
+            <div class="h-10 w-10 bg-blue-600 rounded-full flex items-center justify-center text-white font-bold text-sm">AS</div>
+        </div>
+    </div>
+</header>
+
+<div class="p-8 space-y-8">
+
+    <!-- Contadores rápidos -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
+            <p class="text-sm text-gray-500 mb-1">Copias Realizadas</p>
+            <h3 class="text-2xl font-bold" id="contadorCopias">0</h3>
+        </div>
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <p class="text-sm text-gray-500 mb-1">Restauraciones</p>
+            <h3 class="text-2xl font-bold" id="contadorRestauraciones">0</h3>
+        </div>
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <p class="text-sm text-gray-500 mb-1">Última Operación</p>
+            <h3 class="text-2xl font-bold" id="ultimaOperacion">---</h3>
+        </div>
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+            <p class="text-sm text-gray-500 mb-1">Fecha / Hora</p>
+            <h3 class="text-2xl font-bold" id="ultimaFecha">---</h3>
+        </div>
+    </div>
+
+    <!-- Acciones y consola -->
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-8">
+        <div class="xl:col-span-2 bg-white rounded-2xl shadow-sm p-8 border border-gray-100">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-xl font-bold text-gray-800">Panel de Automatización</h2>
+            </div>
+            <div class="flex gap-4 pt-4">
+                <button onclick="startBackup()" id="btnBackup" class="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 shadow-lg flex items-center justify-center gap-3">
+                    <i class="fas fa-play"></i> Iniciar Copia
+                </button>
+                <button onclick="startRestore()" id="btnRestore" class="flex-1 bg-red-600 text-white py-3 rounded-xl font-bold hover:bg-red-700 shadow-lg flex items-center justify-center gap-3">
+                    <i class="fas fa-undo"></i> Restaurar Datos
+                </button>
+            </div>
+            <div class="mt-6">
+                <h3 class="font-bold text-gray-700 mb-2">Historial de Operaciones</h3>
+                <ul id="historial" class="space-y-1 bg-gray-50 p-4 rounded-xl border border-gray-200"></ul>
+            </div>
+        </div>
+
+        <!-- Gráfica -->
+        <div class="bg-white rounded-2xl shadow-sm p-6 border border-gray-100">
+            <h2 class="text-lg font-bold mb-4 text-gray-800">Estadísticas</h2>
+            <canvas id="miniChart" height="250"></canvas>
+        </div>
+    </div>
+</div>
+</main>
+
+<script>
+let contadorCopias = 0;
+let contadorRestauraciones = 0;
+let chartInstance = null;
+
+async function startBackup() {
+    const btn = document.getElementById('btnBackup');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Ejecutando copia...';
+    try {
+        const { data } = await axios.post('/backup', { tipo: 'Completa' });
+        actualizarDashboard(data.historial);
+    } catch(err) { alert("Error al ejecutar la copia"); }
+    finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-play"></i> Iniciar Copia';
+    }
+}
+
+async function startRestore() {
+    const btn = document.getElementById('btnRestore');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Restaurando...';
+    try {
+        const { data } = await axios.post('/restore');
+        actualizarDashboard(data.historial);
+    } catch(err) { alert("Error al restaurar"); }
+    finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-undo"></i> Restaurar Datos';
+    }
+}
+
+function actualizarDashboard(historialData) {
+    const lista = document.getElementById('historial');
+    lista.innerHTML = '';
+    contadorCopias = 0;
+    contadorRestauraciones = 0;
+
+    historialData.forEach(h => {
+        const li = document.createElement('li');
+        li.textContent = `${h.fecha} - ${h.tipo}: ${h.descripcion}`;
+        lista.appendChild(li);
+
+        if(h.tipo === 'Copia') contadorCopias++;
+        else if(h.tipo === 'Restauración') contadorRestauraciones++;
+    });
+
+    document.getElementById('contadorCopias').innerText = contadorCopias;
+    document.getElementById('contadorRestauraciones').innerText = contadorRestauraciones;
+
+    if(historialData.length > 0) {
+        document.getElementById('ultimaOperacion').innerText = historialData[historialData.length-1].tipo;
+        document.getElementById('ultimaFecha').innerText = historialData[historialData.length-1].fecha;
+    }
+
+    const ctx = document.getElementById('miniChart').getContext('2d');
+    if(chartInstance) chartInstance.destroy();
+    chartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Copias', 'Restauraciones'],
+            datasets: [{
+                label: 'Total',
+                data: [contadorCopias, contadorRestauraciones],
+                backgroundColor: ['#3b82f6','#f87171']
+            }]
+        },
+        options: { responsive: true, plugins: { legend: { display: false } } }
+    });
+}
+
+// Cargar historial inicial
+axios.get('/historial').then(res => actualizarDashboard(res.data));
+</script>
+</body>
+</html>
