@@ -30,9 +30,13 @@ class GUID(ctypes.Structure):
         ("Data4", wintypes.BYTE * 8),
     ]
 
+
 def _guid_from_str(g: str) -> GUID:
     import re
-    m = re.fullmatch(r"([0-9A-Fa-f]{8})-([0-9A-Fa-f]{4})-([0-9A-Fa-f]{4})-([0-9A-Fa-f]{4})-([0-9A-Fa-f]{12})", g)
+    m = re.fullmatch(
+        r"([0-9A-Fa-f]{8})-([0-9A-Fa-f]{4})-([0-9A-Fa-f]{4})-([0-9A-Fa-f]{4})-([0-9A-Fa-f]{12})",
+        g
+    )
     if not m:
         raise ValueError("GUID inválido")
     d1 = int(m.group(1), 16)
@@ -42,6 +46,7 @@ def _guid_from_str(g: str) -> GUID:
     d4b = bytes.fromhex(m.group(5))
     d4 = (ctypes.c_ubyte * 8).from_buffer_copy(d4a + d4b)
     return GUID(d1, d2, d3, d4)
+
 
 def get_known_folder_path(guid_str: str) -> str:
     shell32 = ctypes.windll.shell32
@@ -57,6 +62,7 @@ def get_known_folder_path(guid_str: str) -> str:
     path = path_ptr.value
     ole32.CoTaskMemFree(path_ptr)
     return path
+
 
 def get_base_path(tipo: str) -> str:
     if tipo == "documentos":
@@ -88,7 +94,7 @@ def dashboard():
         return redirect(url_for("login"))
     return render_template("dashboard.html", username=session["user"])
 
-# ----------------- BACKUP NORMAL (EJECUTA .PS1) -----------------
+# ----------------- BACKUP NORMAL (verifica ZIP real) -----------------
 @app.route("/backup", methods=["POST"])
 def backup():
     data = request.get_json() or {}
@@ -108,23 +114,68 @@ def backup():
     if not os.path.exists(script_path):
         return jsonify({"ok": False, "error": f"No existe el script: {script_path}"}), 500
 
+    # Foto ANTES (zips existentes)
+    try:
+        before = {
+            f.lower()
+            for f in os.listdir(BACKUPS_DIR)
+            if f.lower().endswith(".zip")
+        }
+    except Exception:
+        before = set()
+
     try:
         res = subprocess.run(
             ["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path],
             capture_output=True,
-            text=True
+            text=True,
+            cwd=BASE_DIR
         )
 
         if res.returncode != 0:
-            return jsonify({"ok": False, "error": (res.stderr.strip() or res.stdout.strip() or "Error ejecutando el script")}), 500
+            return jsonify({
+                "ok": False,
+                "error": (res.stderr.strip() or res.stdout.strip() or "Error ejecutando el script")
+            }), 500
+
+        # Foto DESPUÉS + detectar zip nuevo
+        zip_path = None
+        try:
+            after_files = [
+                f for f in os.listdir(BACKUPS_DIR)
+                if f.lower().endswith(".zip")
+            ]
+            after = {f.lower() for f in after_files}
+            new_zips = list(after - before)
+
+            if new_zips:
+                candidates = [
+                    os.path.join(BACKUPS_DIR, f)
+                    for f in after_files
+                    if f.lower() in new_zips
+                ]
+                zip_path = max(candidates, key=os.path.getmtime)
+        except Exception:
+            zip_path = None
+
+        # Si no se creó ZIP, no lo damos por OK
+        if not zip_path:
+            return jsonify({
+                "ok": False,
+                "error": "El script terminó sin error, pero NO se detectó ningún ZIP nuevo en la carpeta 'backups'.",
+                "stdout": (res.stdout or "").strip(),
+                "stderr": (res.stderr or "").strip(),
+                "backups_dir": BACKUPS_DIR,
+                "script": script_path
+            }), 500
 
         historial.append({
             "fecha": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
             "tipo": "Copia",
-            "descripcion": f"Copia {tipo} realizada correctamente"
+            "descripcion": f"Copia {tipo} realizada correctamente -> {zip_path}"
         })
 
-        return jsonify({"ok": True, "historial": historial})
+        return jsonify({"ok": True, "historial": historial, "zip": zip_path})
 
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -154,7 +205,7 @@ def listar():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ----------------- BACKUP SELECTIVO (ItemsStr para evitar errores) -----------------
+# ----------------- BACKUP SELECTIVO -----------------
 @app.route("/backup_selectivo", methods=["POST"])
 def backup_selectivo():
     data = request.get_json() or {}
@@ -172,7 +223,6 @@ def backup_selectivo():
         return jsonify({"ok": False, "error": f"No existe el script: {script_path}"}), 500
 
     try:
-        # Pasar la lista como una sola cadena segura: "a|b|c"
         items_str = "|".join(items)
 
         cmd = [
@@ -182,7 +232,7 @@ def backup_selectivo():
             "-ItemsStr", items_str
         ]
 
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(cmd, capture_output=True, text=True, cwd=BASE_DIR)
 
         if res.returncode != 0:
             return jsonify({
@@ -201,7 +251,7 @@ def backup_selectivo():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ----------------- RESTORE (sin cambios) -----------------
+# ----------------- RESTORE -----------------
 @app.route("/restore", methods=["POST"])
 def restore():
     script_path = os.path.join(SCRIPTS_DIR, "restore.ps1")
@@ -212,7 +262,8 @@ def restore():
         res = subprocess.run(
             ["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path],
             capture_output=True,
-            text=True
+            text=True,
+            cwd=BASE_DIR
         )
 
         if res.returncode != 0:
@@ -240,5 +291,11 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
+# ----------------- RUN SERVER (Waitress) -----------------
+def run_server(host="127.0.0.1", port=5000):
+    from waitress import serve
+    serve(app, host=host, port=port)
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Modo desarrollo (ejecución manual)
+    app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
