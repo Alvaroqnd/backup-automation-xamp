@@ -8,20 +8,40 @@ from ctypes import wintypes
 app = Flask(__name__)
 app.secret_key = "mi_clave_secreta"
 
-# ----------------- RUTAS DEL PROYECTO -----------------
+# =====================================================
+# RUTAS PROFESIONALES (FUNCIONAN EN EXE E INSTALADO)
+# =====================================================
+
+# Carpeta Documentos del usuario
+USER_HOME = os.path.expanduser("~")
+USER_DOCS = os.path.join(USER_HOME, "Documents")
+
+# Carpeta base de la aplicación
+APP_DIR = os.path.join(USER_DOCS, "CORE_SYNC")
+
+# Carpeta de backups (DESTINO REAL)
+BACKUPS_DIR = os.path.join(APP_DIR, "backups")
+
+# Carpeta de scripts PowerShell (incluidos en el EXE)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.join(BASE_DIR, "Scripts")
-BACKUPS_DIR = os.path.join(BASE_DIR, "backups")
+
 os.makedirs(BACKUPS_DIR, exist_ok=True)
 
-# ----------------- USUARIO APP (DEMO) -----------------
+# =====================================================
+# USUARIO DEMO
+# =====================================================
 USUARIO = "asir"
 PASSWORD = "1234"
 
-# ----------------- HISTORIAL -----------------
+# =====================================================
+# HISTORIAL EN MEMORIA
+# =====================================================
 historial = []
 
-# ----------------- KNOWN FOLDERS WINDOWS (rutas reales) -----------------
+# =====================================================
+# KNOWN FOLDERS WINDOWS
+# =====================================================
 class GUID(ctypes.Structure):
     _fields_ = [
         ("Data1", wintypes.DWORD),
@@ -73,28 +93,30 @@ def get_base_path(tipo: str) -> str:
         return get_known_folder_path("374DE290-123F-4565-9164-39C4925E467B")
     raise ValueError("Tipo no válido")
 
-# ----------------- LOGIN -----------------
+# =====================================================
+# LOGIN
+# =====================================================
 @app.route("/", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
-
-        if username == USUARIO and password == PASSWORD:
-            session["user"] = username
+        if request.form.get("username") == USUARIO and request.form.get("password") == PASSWORD:
+            session["user"] = USUARIO
             return redirect(url_for("dashboard"))
         return render_template("login.html", error="Usuario o contraseña incorrectos")
-
     return render_template("login.html")
 
-# ----------------- DASHBOARD -----------------
+# =====================================================
+# DASHBOARD
+# =====================================================
 @app.route("/dashboard")
 def dashboard():
     if "user" not in session:
         return redirect(url_for("login"))
     return render_template("dashboard.html", username=session["user"])
 
-# ----------------- BACKUP NORMAL (verifica ZIP real) -----------------
+# =====================================================
+# BACKUP NORMAL (VERIFICADO)
+# =====================================================
 @app.route("/backup", methods=["POST"])
 def backup():
     data = request.get_json() or {}
@@ -107,195 +129,118 @@ def backup():
         "descargas": "backup_descargas.ps1",
     }
 
-    if tipo not in scripts:
-        return jsonify({"ok": False, "error": "Tipo de copia no válido"}), 400
+    script_path = os.path.join(SCRIPTS_DIR, scripts.get(tipo, ""))
 
-    script_path = os.path.join(SCRIPTS_DIR, scripts[tipo])
-    if not os.path.exists(script_path):
-        return jsonify({"ok": False, "error": f"No existe el script: {script_path}"}), 500
+    before = set(os.listdir(BACKUPS_DIR))
 
-    # Foto ANTES (zips existentes)
-    try:
-        before = {
-            f.lower()
-            for f in os.listdir(BACKUPS_DIR)
-            if f.lower().endswith(".zip")
-        }
-    except Exception:
-        before = set()
+    res = subprocess.run(
+        ["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path],
+        capture_output=True,
+        text=True,
+        cwd=BASE_DIR
+    )
 
-    try:
-        res = subprocess.run(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path],
-            capture_output=True,
-            text=True,
-            cwd=BASE_DIR
-        )
+    if res.returncode != 0:
+        return jsonify({"ok": False, "error": res.stderr or res.stdout}), 500
 
-        if res.returncode != 0:
-            return jsonify({
-                "ok": False,
-                "error": (res.stderr.strip() or res.stdout.strip() or "Error ejecutando el script")
-            }), 500
+    after = set(os.listdir(BACKUPS_DIR))
+    new_files = [f for f in after - before if f.lower().endswith(".zip")]
 
-        # Foto DESPUÉS + detectar zip nuevo
-        zip_path = None
-        try:
-            after_files = [
-                f for f in os.listdir(BACKUPS_DIR)
-                if f.lower().endswith(".zip")
-            ]
-            after = {f.lower() for f in after_files}
-            new_zips = list(after - before)
+    if not new_files:
+        return jsonify({
+            "ok": False,
+            "error": "El script se ejecutó pero no se generó ningún ZIP.",
+            "stdout": res.stdout
+        }), 500
 
-            if new_zips:
-                candidates = [
-                    os.path.join(BACKUPS_DIR, f)
-                    for f in after_files
-                    if f.lower() in new_zips
-                ]
-                zip_path = max(candidates, key=os.path.getmtime)
-        except Exception:
-            zip_path = None
+    zip_path = os.path.join(BACKUPS_DIR, new_files[0])
 
-        # Si no se creó ZIP, no lo damos por OK
-        if not zip_path:
-            return jsonify({
-                "ok": False,
-                "error": "El script terminó sin error, pero NO se detectó ningún ZIP nuevo en la carpeta 'backups'.",
-                "stdout": (res.stdout or "").strip(),
-                "stderr": (res.stderr or "").strip(),
-                "backups_dir": BACKUPS_DIR,
-                "script": script_path
-            }), 500
+    historial.append({
+        "fecha": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "tipo": "Copia",
+        "descripcion": f"Copia {tipo} -> {zip_path}"
+    })
 
-        historial.append({
-            "fecha": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            "tipo": "Copia",
-            "descripcion": f"Copia {tipo} realizada correctamente -> {zip_path}"
-        })
+    return jsonify({"ok": True, "historial": historial, "zip": zip_path})
 
-        return jsonify({"ok": True, "historial": historial, "zip": zip_path})
-
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-# ----------------- LISTAR CONTENIDO (para copia selectiva) -----------------
+# =====================================================
+# LISTAR CONTENIDO
+# =====================================================
 @app.route("/listar", methods=["POST"])
 def listar():
     data = request.get_json() or {}
-    tipo = data.get("tipo")
+    base = get_base_path(data.get("tipo"))
+    items = [{"name": f, "kind": "dir" if os.path.isdir(os.path.join(base, f)) else "file"} for f in os.listdir(base)]
+    return jsonify({"ok": True, "items": items})
 
-    if tipo not in ("documentos", "escritorio", "descargas"):
-        return jsonify({"ok": False, "error": "Tipo no válido para listar"}), 400
-
-    try:
-        base = get_base_path(tipo)
-        items = []
-        for name in os.listdir(base):
-            full = os.path.join(base, name)
-            items.append({
-                "name": name,
-                "kind": "dir" if os.path.isdir(full) else "file"
-            })
-
-        items.sort(key=lambda x: (0 if x["kind"] == "dir" else 1, x["name"].lower()))
-        return jsonify({"ok": True, "base": base, "items": items})
-
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-# ----------------- BACKUP SELECTIVO -----------------
+# =====================================================
+# BACKUP SELECTIVO
+# =====================================================
 @app.route("/backup_selectivo", methods=["POST"])
 def backup_selectivo():
     data = request.get_json() or {}
-    tipo = data.get("tipo")
-    items = data.get("items", [])
-
-    if tipo not in ("documentos", "escritorio", "descargas"):
-        return jsonify({"ok": False, "error": "Tipo no válido para copia selectiva"}), 400
-
-    if not isinstance(items, list) or len(items) == 0:
-        return jsonify({"ok": False, "error": "Selecciona al menos un elemento"}), 400
-
     script_path = os.path.join(SCRIPTS_DIR, "backup_selectivo.ps1")
-    if not os.path.exists(script_path):
-        return jsonify({"ok": False, "error": f"No existe el script: {script_path}"}), 500
 
-    try:
-        items_str = "|".join(items)
-
-        cmd = [
+    res = subprocess.run(
+        [
             "powershell", "-ExecutionPolicy", "Bypass",
             "-File", script_path,
-            "-Tipo", tipo,
-            "-ItemsStr", items_str
-        ]
+            "-Tipo", data.get("tipo"),
+            "-ItemsStr", "|".join(data.get("items", []))
+        ],
+        capture_output=True,
+        text=True,
+        cwd=BASE_DIR
+    )
 
-        res = subprocess.run(cmd, capture_output=True, text=True, cwd=BASE_DIR)
+    if res.returncode != 0:
+        return jsonify({"ok": False, "error": res.stderr or res.stdout}), 500
 
-        if res.returncode != 0:
-            return jsonify({
-                "ok": False,
-                "error": (res.stderr.strip() or res.stdout.strip() or "Error en copia selectiva")
-            }), 500
+    return jsonify({"ok": True})
 
-        historial.append({
-            "fecha": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            "tipo": "Copia",
-            "descripcion": f"Copia selectiva de {tipo}: {', '.join(items)}"
-        })
-
-        return jsonify({"ok": True, "historial": historial})
-
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-# ----------------- RESTORE -----------------
+# =====================================================
+# RESTORE
+# =====================================================
 @app.route("/restore", methods=["POST"])
 def restore():
     script_path = os.path.join(SCRIPTS_DIR, "restore.ps1")
-    if not os.path.exists(script_path):
-        return jsonify({"ok": False, "error": f"No existe el script: {script_path}"}), 500
 
-    try:
-        res = subprocess.run(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path],
-            capture_output=True,
-            text=True,
-            cwd=BASE_DIR
-        )
+    res = subprocess.run(
+        ["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path],
+        capture_output=True,
+        text=True,
+        cwd=BASE_DIR
+    )
 
-        if res.returncode != 0:
-            return jsonify({"ok": False, "error": (res.stderr.strip() or res.stdout.strip() or "Error ejecutando restore.ps1")}), 500
+    if res.returncode != 0:
+        return jsonify({"ok": False, "error": res.stderr or res.stdout}), 500
 
-        historial.append({
-            "fecha": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-            "tipo": "Restauración",
-            "descripcion": "Restauración realizada correctamente"
-        })
+    return jsonify({"ok": True})
 
-        return jsonify({"ok": True, "historial": historial})
+# =====================================================
+# INFO / ESTADO (PROFESIONAL)
+# =====================================================
+@app.route("/status")
+def status():
+    return jsonify({
+        "backups_dir": BACKUPS_DIR,
+        "backups_files": os.listdir(BACKUPS_DIR)
+    })
 
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-# ----------------- HISTORIAL -----------------
-@app.route("/historial", methods=["GET"])
-def get_historial():
-    return jsonify(historial)
-
-# ----------------- LOGOUT -----------------
+# =====================================================
+# LOGOUT
+# =====================================================
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
 
-# ----------------- RUN SERVER (Waitress) -----------------
+# =====================================================
+# SERVIDOR (WAITRESS)
+# =====================================================
 def run_server(host="127.0.0.1", port=5000):
     from waitress import serve
     serve(app, host=host, port=port)
 
 if __name__ == "__main__":
-    # Modo desarrollo (ejecución manual)
     app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
