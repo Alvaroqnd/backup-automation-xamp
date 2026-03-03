@@ -1,0 +1,26 @@
+# XAMPP
+
+mysql/data/
+
+htdocs/backups/
+ 
+# Backups
+
+backups/
+
+*.zip
+
+*.tar
+ 
+# Python
+
+__pycache__/
+
+*.pyc
+
+.env
+ 
+# Logs
+
+*.log
+ 
